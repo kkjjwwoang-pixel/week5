@@ -1,0 +1,423 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>파리잡기</title>
+<style>
+  html, body { height:100%; margin:0;user-select:none; }
+  body { background:#fff; font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif; overflow:hidden; }
+  #stage { position:relative; width:100vw; height:100vh; }
+
+
+  #timeHud{
+    position:absolute; left:50%; top:21px; transform:translateX(-50%);
+    z-index:10; user-select:none;
+    background:rgba(255,255,255,0.92); border:1px solid #dcdcdc; border-radius:10px;padding:8px 12px; font-size:24px;display:flex; gap:8px; align-items:center;
+  }
+  #timeHud strong{ font-weight:700; }
+
+  #scoreHud{
+    position:absolute; right:30px; bottom:30px;z-index:10; user-select:none;background:rgba(255,255,255,0.92); border:1px solid #dcdcdc; border-radius:10px;padding:8px 12px; font-size:24px; display:flex; gap:8px; align-items:center;
+  }
+  #scoreHud strong{ font-weight:700; }
+
+
+
+
+
+  #chameleon{
+    position:absolute; left:80px; bottom:80px; width:min(40vw,560px);user-select:none; pointer-events:auto; z-index:2;
+  }
+  #chameleon img{ width:100%; display:block; }
+
+  .eye{ position:absolute; width:0; height:0; border-radius:50%; overflow:hidden; pointer-events:none; }
+  .pupil{ position:absolute; left:50%; top:50%; width:0; height:0; border-radius:50%; background:#111; transform:translate(-50%,-50%); }
+
+  #tongueImg{
+    position:absolute; z-index:4;width:300px; transform-origin: left center; transform: translate(0,-50%) scaleX(0) rotate(0deg); opacity:0; transition: transform 120ms ease-out, opacity 60ms ease-out; pointer-events:none;
+  }
+
+  .fly{
+    position:absolute; z-index:3; width:30px; height:30px; transform:translate(-50%,-50%); pointer-events:auto;
+    will-change: transform, opacity, left, top;
+  }
+  .fly img{ width:100%; height:100%; object-fit:contain; display:block; }
+  .fly.caught{ pointer-events:none; }
+
+
+  #msgWrap{
+    position:absolute; inset:0; display:none; z-index:12; background:rgba(255,255,255,0.86); backdrop-filter:saturate(140%) blur(1px); align-items:center; justify-content:center;
+  }
+  #msg{
+    background:#fff; border:1px solid #333; padding:20px 24px; border-radius:14px; text-align:center;
+    box-shadow:0 6px 18px rgba(0,0,0,0.1); max-width:min(80vw,520px);
+  }
+  #finalScore{
+    font-size:56px; font-weight:800; line-height:1.1; margin:4px 0 10px;
+  }
+  #finalSub{
+    font-size:16px; color:#333; margin-bottom:16px;
+  }
+  #restartBtn{
+    font-size:16px; padding:10px 16px; border-radius:10px; border:1px solid #333; background:#fff; cursor:pointer;
+  }
+  #restartBtn:hover{ background:#f4f4f4; }
+
+  
+  .catchText{
+    position:absolute; z-index:11; pointer-events:none;font-weight:700; font-size:18px; color:#111; text-shadow:0 1px 0 rgba(255,255,255,0.6);transform:translate(-50%,-50%);animation: popUpFade 700ms ease-out forwards;
+  }
+  @keyframes popUpFade{
+     0%  { opacity:0; transform:translate(-50%,-50%) scale(0.8); }
+    15%  { opacity:1; transform:translate(-50%,-70%) scale(1.0); }
+   100%  { opacity:0; transform:translate(-50%,-120%) scale(1.0); }
+  }
+</style>
+</head>
+<body>
+  <div id="stage">
+    <div id="timeHud"><strong>Time</strong><span id="time">30</span>s</div>
+    <div id="scoreHud"><strong>Score</strong><span id="score">0</span></div>
+
+    <div id="chameleon">
+      <img id="chamImg" src="cameleon.png" alt="chameleon" />
+    </div>
+    <img id="tongueImg" src="tongue.png" alt="tongue" />
+    <audio id="catchSnd" src="catch.mp3" preload="auto"></audio>
+    <div id="msgWrap" aria-hidden="true">
+      <div id="msg">
+        <div id="finalScore">0</div>
+        <div id="finalSub">카멜레온은 아직 배고파요</div>
+        <button id="restartBtn" type="button">다시하기</button>
+      </div>
+    </div>
+  </div>
+
+<script>
+(() => {
+  let EYE = { cx: 0.771, cy: 0.139, rSocket: 0.045, rPupil: 0.024 };
+  let MOUTH = { cx: 0.800, cy: 0.240 };
+
+  const EDGE_PADDING = 2;
+  const ROUND_TIME = 30;
+  const OPEN_MOUTH_MS = 180;
+  const TONGUE_FADE_MS = 130;
+  const TONGUE_TRANS_MS = 120;
+
+  let BASE_TONGUE_PX = 220;
+  const TONGUE_LENGTH_GAIN = 1.0;
+  const TONGUE_SCALE_Y    = 1.35;
+  const TONGUE_TIP_PAD    = 12;
+
+  const FLY_COUNT = 3;
+  const FLY_SPEED_MIN = 0.5;
+  const FLY_SPEED_MAX = 1.4;
+  const FLY_SPEED_CAP = FLY_SPEED_MAX * 1.25;
+  const HIT_RADIUS = 16;
+
+  const FLY_AREA = { x: 0.4, y: 0.0, width: 0.6, height: 1.0 };
+
+  const stage = document.getElementById('stage');
+  const cham  = document.getElementById('chameleon');
+  const img   = document.getElementById('chamImg');
+  const tongueImg = document.getElementById('tongueImg');
+  const catchSnd = document.getElementById('catchSnd');
+
+  const scoreEl = document.getElementById('score');
+  const timeEl  = document.getElementById('time');
+  const msgWrap = document.getElementById('msgWrap');
+  const finalScoreEl = document.getElementById('finalScore');
+  const restartBtn = document.getElementById('restartBtn');
+
+
+  let eyeEl, pupilEl;
+  let flies = [];
+  let score = 0, timeLeft = ROUND_TIME, playing = true;
+  let _inited = false;
+
+  function chamRect(){ return cham.getBoundingClientRect(); }
+  function stageRect(){ return stage.getBoundingClientRect(); }
+  function pctToPx(cx, cy){ const r = chamRect(); return { x: cx*r.width, y: cy*r.height }; }
+
+  function getFlyBoundsPx(){
+    const s = stageRect();
+    const left = s.left + s.width  * FLY_AREA.x;
+    const top  = s.top  + s.height * FLY_AREA.y;
+    const right  = left + s.width  * FLY_AREA.width;
+    const bottom = top  + s.height * FLY_AREA.height;
+    return { left, top, right, bottom };
+  }
+
+  function showCatchText(clientX, clientY){
+    const el = document.createElement('div');
+    el.className = 'catchText';
+    el.textContent = 'catch!';
+    el.style.left = clientX + 'px';
+    el.style.top  = clientY + 'px';
+    stage.appendChild(el);
+    setTimeout(()=>{ el.remove(); }, 700);
+  }
+
+  function playCatchSound(){
+    try{
+      catchSnd.currentTime = 0;
+      catchSnd.play();
+    }catch(e){}
+  }
+
+  function buildEye(){
+    if (eyeEl) eyeEl.remove();
+    const r = chamRect(), W=r.width, H=r.height;
+
+    const rSock = EYE.rSocket * W;
+    const rPup  = EYE.rPupil  * W;
+    const cxPx  = EYE.cx * W;
+    const cyPx  = EYE.cy * H;
+
+    eyeEl = document.createElement('div');
+    eyeEl.className = 'eye';
+    Object.assign(eyeEl.style, {
+      width: (rSock*2)+'px', height:(rSock*2)+'px',
+      left:(cxPx - rSock)+'px', top:(cyPx - rSock)+'px'
+    });
+
+    pupilEl = document.createElement('div');
+    pupilEl.className = 'pupil';
+    Object.assign(pupilEl.style, { width:(rPup*2)+'px', height:(rPup*2)+'px' });
+
+    eyeEl.appendChild(pupilEl);
+    cham.appendChild(eyeEl);
+  }
+
+  function onMove(e){
+    if(!pupilEl) return;
+    const s = stageRect(), c = chamRect();
+    const targetX = e.clientX - s.left, targetY = e.clientY - s.top;
+    const ex = c.left - s.left + EYE.cx * c.width;
+    const ey = c.top  - s.top  + EYE.cy * c.height;
+    const dx = targetX - ex, dy = targetY - ey, dist = Math.hypot(dx, dy);
+    const limit = Math.max(0, EYE.rSocket*c.width - EYE.rPupil*c.width - EDGE_PADDING);
+    const rx = dist>0 ? dx/dist*Math.min(dist,limit) : 0;
+    const ry = dist>0 ? dy/dist*Math.min(dist,limit) : 0;
+
+
+
+    pupilEl.style.transform = `translate(calc(-50% + ${rx}px), calc(-50% + ${ry}px))`;
+  }
+
+  function randomPointInArea(){
+    const s = stageRect();
+    const left = s.width  * FLY_AREA.x;
+    const top  = s.height * FLY_AREA.y;
+    const w = s.width  * FLY_AREA.width;
+    const h = s.height * FLY_AREA.height;
+    return {
+      x: left + Math.random()*w,
+      y: top  + Math.random()*h
+    };
+  }
+
+  function spawnFly(){
+    const fly = document.createElement('div');
+    fly.className='fly';
+    const imgEl = document.createElement('img');
+    imgEl.src = 'fly.png';
+    imgEl.alt = 'fly';
+    fly.appendChild(imgEl);
+
+    const p = randomPointInArea();
+    fly.style.left = p.x + 'px';
+    fly.style.top  = p.y + 'px';
+
+    const spd = FLY_SPEED_MIN + Math.random()*(FLY_SPEED_MAX-FLY_SPEED_MIN);
+    const ang = Math.random()*Math.PI*2;
+    fly.vx = Math.cos(ang)*spd;
+    fly.vy = Math.sin(ang)*spd;
+    fly.isCaught = false;
+
+    stage.appendChild(fly);
+    flies.push(fly);
+  }
+
+  function moveFlies(){
+    const bounds = getFlyBoundsPx();
+    for(const f of flies){
+      if (f.isCaught) continue;
+
+      let x=parseFloat(f.style.left), y=parseFloat(f.style.top);
+      x+=f.vx; y+=f.vy;
+
+      if(x < bounds.left){ x = bounds.left; f.vx*=-1; }
+      if(x > bounds.right){ x = bounds.right; f.vx*=-1; }
+      if(y < bounds.top){ y = bounds.top; f.vy*=-1; }
+      if(y > bounds.bottom){ y = bounds.bottom; f.vy*=-1; }
+
+      const j=0.04;
+      f.vx+=(Math.random()-0.5)*j;
+      f.vy+=(Math.random()-0.5)*j;
+
+      const v=Math.hypot(f.vx,f.vy);
+      if(v>FLY_SPEED_CAP){ f.vx=f.vx/v*FLY_SPEED_CAP; f.vy=f.vy/v*FLY_SPEED_CAP; }
+
+      f.style.left=x+'px';
+      f.style.top =y+'px';
+    }
+  }
+
+  function captureFly(fly, clientX, clientY){
+    if (!fly || fly.isCaught) return;
+    fly.isCaught = true;
+
+    playCatchSound();
+    showCatchText(clientX, clientY);
+
+    fly.classList.add('caught');
+    fly.style.transition = 'transform 420ms ease, opacity 420ms ease';
+    fly.style.transform = 'translate(-50%,-50%) translateY(120px) rotate(35deg)';
+    fly.style.opacity = '0';
+
+    setTimeout(()=>{
+      if (fly.parentNode) fly.parentNode.removeChild(fly);
+      flies = flies.filter(ff=>ff!==fly);
+      score++; scoreEl.textContent = score;
+      spawnFly();
+    }, 430);
+  }
+
+  function fireTongue(e){
+    if(!playing) return;
+
+    const originalSrc = img.src;
+    img.src = 'cameleon2.png';
+    setTimeout(()=>{ img.src = originalSrc; }, OPEN_MOUTH_MS);
+
+    const s=stageRect(), c=chamRect();
+    const mouthPx = pctToPx(MOUTH.cx, MOUTH.cy);
+    const mouthX = c.left - s.left + mouthPx.x;
+    const mouthY = c.top  - s.top  + mouthPx.y;
+
+    const tx = e.clientX - s.left, ty = e.clientY - s.top;
+    const dx=tx-mouthX, dy=ty-mouthY, len=Math.hypot(dx,dy), ang=Math.atan2(dy,dx)*180/Math.PI;
+
+    updateBaseTongueWidth();
+
+    const effLen = Math.max(0, len - TONGUE_TIP_PAD);
+    const scaleX = (effLen / BASE_TONGUE_PX) * TONGUE_LENGTH_GAIN;
+
+    tongueImg.style.left = mouthX + 'px';
+    tongueImg.style.top  = mouthY + 'px';
+    tongueImg.style.transition = 'none';
+    tongueImg.style.opacity = '1';
+    tongueImg.style.transform = `translate(0,-50%) scaleX(0) scaleY(${TONGUE_SCALE_Y}) rotate(${ang}deg)`;
+
+    requestAnimationFrame(()=>{
+      tongueImg.style.transition = `transform ${TONGUE_TRANS_MS}ms ease-out, opacity 60ms ease-out`;
+      tongueImg.style.transform = `translate(0,-50%) scaleX(${scaleX}) scaleY(${TONGUE_SCALE_Y}) rotate(${ang}deg)`;
+    });
+
+    for(const f of [...flies]){
+      const fx=parseFloat(f.style.left), fy=parseFloat(f.style.top);
+      if(distancePointToSegment(fx,fy,mouthX,mouthY,tx,ty)<=HIT_RADIUS){
+        captureFly(f, e.clientX, e.clientY);
+      }
+    }
+
+    setTimeout(()=>{ tongueImg.style.opacity=0; }, TONGUE_FADE_MS);
+    setTimeout(()=>{ tongueImg.style.transform = `translate(0,-50%) scaleX(0) scaleY(${TONGUE_SCALE_Y}) rotate(${ang}deg)`; }, TONGUE_TRANS_MS + 40);
+  }
+
+  function distancePointToSegment(px,py,x1,y1,x2,y2){
+    const vx=x2-x1, vy=y2-y1, wx=px-x1, wy=py-y1, v2=vx*vx+vy*vy||1;
+    let t=(wx*vx+wy*vy)/v2; t=Math.max(0,Math.min(1,t));
+    const cx=x1+t*vx, cy=y1+t*vy; return Math.hypot(px-cx,py-cy);
+  }
+
+
+  let timerId = setInterval(tick, 1000);
+  function tick(){
+    if(!playing) return;
+    timeLeft--;
+    timeEl.textContent=timeLeft;
+    if(timeLeft<=0){
+      timeEl.textContent=0;
+      endGame();
+    }
+  }
+
+  function endGame(){
+    playing=false;
+    finalScoreEl.textContent = score;
+    msgWrap.style.display = 'flex';
+    msgWrap.setAttribute('aria-hidden', 'false');
+  }
+
+  function init(){
+    if (_inited) return;
+    _inited = true;
+
+    buildEye();
+
+    for(let i=0;i<FLY_COUNT;i++) spawnFly();
+
+    requestAnimationFrame(function loopAnim(){
+      if(playing) moveFlies();
+      requestAnimationFrame(loopAnim);
+    });
+  }
+
+  function resetGame(){
+    playing = false;
+    for(const f of flies){ if(f.parentNode) f.parentNode.removeChild(f); }
+    flies = [];
+
+    score = 0; scoreEl.textContent = score;
+    timeLeft = ROUND_TIME; timeEl.textContent = timeLeft;
+    img.src = 'cameleon.png';
+    buildEye();
+    for(let i=0;i<FLY_COUNT;i++) spawnFly();
+    msgWrap.style.display = 'none';
+    msgWrap.setAttribute('aria-hidden', 'true');
+    playing = true;
+  }
+
+
+  window.onmousemove = onMove;
+  window.onclick = fireTongue;
+  stage.addEventListener('click', (e)=>{
+    const flyEl = e.target.closest?.('.fly');
+    if (flyEl && playing){
+      captureFly(flyEl, e.clientX, e.clientY);
+    }
+  });
+  restartBtn.addEventListener('click', (e)=>{
+    e.stopPropagation();
+    resetGame();
+  });
+
+
+msgWrap.addEventListener('click', (e)=>{
+  if (e.target === msgWrap) e.stopPropagation();
+});
+
+  window.addEventListener('resize', ()=>{ buildEye(); });
+
+  function updateBaseTongueWidth(){
+    const w = tongueImg.getBoundingClientRect().width;
+    if (w) BASE_TONGUE_PX = w;
+  }
+  if (tongueImg.complete) updateBaseTongueWidth();
+  else tongueImg.addEventListener('load', updateBaseTongueWidth);
+
+  if (img.complete) {
+    init();
+  } else {
+    img.addEventListener('load', init, { once: true });
+  }
+
+  timeEl.textContent = ROUND_TIME;
+  scoreEl.textContent = 0;
+})();
+</script>
+</body>
+</html>
